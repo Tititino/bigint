@@ -56,8 +56,10 @@ int has_overflown(Chunk mult) {
 BigInt new_big_int(char* s) {
 	int string_len;
 	Chunk acc, mult10, add;
-	// length of the string
+	// length of the string without leading zeroes
 	for (string_len = 0; s[string_len]; string_len++);
+	for (; s[string_len] == '0'; string_len--);
+
 	
 	Chunk* new_nums = NULL, *temp;
 	
