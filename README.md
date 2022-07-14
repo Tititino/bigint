@@ -1,7 +1,7 @@
 # bigint
 (WIP)
 
-C static library to work with arbitrary length numbers. For now it only support naturals with sum and multiplication.
+C static library to work with arbitrary length numbers. For now it barely (not) support naturals with sum and multiplication.
 
 I plan on adding:
   * negative numbers support
