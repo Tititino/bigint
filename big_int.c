@@ -5,24 +5,45 @@
 #include <errno.h>
 #include <math.h>
 
-// #define BASE 	(unsigned long long) 1000000000000000000
-#ifndef BASE
-#define BASE  	(unsigned long long) 10000000
-#endif
+#define NDEBUG
+#include <assert.h>
 
+#define DEFAULT_BASE 	(unsigned long long) 10000000
 
-#define ALLOCATION_ERR	fprintf(stderr, "allocation error in `%s` at %s:%d\n", __func__, __FILE__, __LINE__)
+#define CHECK_PTR_ALLOC(PTR, MSG, TERMINATING)			\
+	if ((PTR) == NULL) {				\
+		errno = EFAULT;			\
+                        fprintf(stderr, "%s in `%s` at %s:%d\n",	\
+		        (MSG), __func__, __FILE__, __LINE__);	\
+		if (TERMINATING) exit(1);		\
+	}						
 
+#define DBG_PRINT_VALUE(VAL)								\
+	#if !defined NDEBUG								\
+		_Generic((VAL), 							\
+		long long unsigned: printf("%llu in `%s` at %s:%d\n", (VAL), __func__, __FILE__, __LINE__),	\
+		long unsigned: printf("%lu in `%s` at %s:%d\n",       (VAL), __func__, __FILE__, __LINE__),	\
+		unsigned: printf("%u in `%s` at %s:%d\n",             (VAl), __func__, __FILE__, __LINE__),	\
+		int: printf("%d in `%s` at %s:%d\n",                  (VAL), __func__, __FILE__, __LINE__),     \
+		char: printf("%c in `%s` at %s:%d\n",                 (VAL), __func__, __FILE__, __LINE__),     \
+		char*: printf("%s in `%s` at %s:%d\n",                (VAL), __func__, __FILE__, __LINE__),	\
+		default: printf("%p in `%p` at %s:%d\n",              (VAL), __func__, __FILE__, __LINE__), 	\
+		         ) (VAL)							\
+           #endif
 
-// two digits
+#define INIT_FMT_STRING(dest, num)	sprintf((dest), "%%0%dllu", (num));
+
 typedef unsigned long long Chunk;
+
+static Chunk base = DEFAULT_BASE;
+static Chunk base_len = (int) log10(DEFAULT_BASE);
 
 // len is the total number of chunks
 // there is no sign for now
 // the smallest digit is on the right
 // using unsigned long long ints the base is 10^19
 // so each number represented by a BigInt is
-// (nums[0]) * 10^19^0 + (nums[1]) * 10^19^1 + ... + (nums[i]) * 10^19^i + ... + (nums[n]) * 10^19^n
+// (nums[0]) * base^0 + (nums[1]) * base^1 + ... + (nums[i]) * base^i + ... + (nums[n]) * base^n
 // where n is len - 1.
 
 typedef struct bigInt {
@@ -30,19 +51,20 @@ typedef struct bigInt {
 	size_t len;
 }* BigInt;
 
-int has_overflown(Chunk mult);
-BigInt new_big_int(char* s);
-void print_big_int(BigInt n);
-BigInt multiply_big_int_small_int(BigInt a, Chunk n);
-BigInt multiply_big_int(BigInt a, BigInt b);
+static int has_overflown(Chunk mult);
 void print_big_int2(BigInt n);
 int is_zero_big_int(BigInt n);
+BigInt new_big_int(char* s);
+BigInt multiply_big_int_small_int(BigInt a, Chunk n);
+void print_big_int(BigInt n);
+BigInt multiply_big_int(BigInt a, BigInt b);
 char* big_int_to_string(BigInt n);
 void destroy_big_int(BigInt n);
+int big_int_change_def_base(Chunk);
+
 
 // better check for overflows
-
-int has_overflown(Chunk mult) {
+static int has_overflown(Chunk mult) {
 	int res = 0;
 
 	while (mult && (res < 2)) {
@@ -53,64 +75,50 @@ int has_overflown(Chunk mult) {
 	return res == 2;
 }
 
+
+// On input "1020303004875647366210" returns the big_int "10203034875647366210"
 BigInt new_big_int(char* s) {
-	int string_len;
-	Chunk acc, mult10, add;
+	if (s == NULL) return NULL;
+            
+	Chunk acc, mult10, add, i, *new_nums = NULL, *temp, string_len;
+
 	// length of the string without leading zeroes
 	for (string_len = 0; s[string_len]; string_len++);
 	for (; s[string_len] == '0'; string_len--);
-
-	
-	Chunk* new_nums = NULL, *temp;
 	
 	BigInt new = malloc(sizeof(struct bigInt));
-	if (!new) {
-		errno = EFAULT;
-		ALLOCATION_ERR;
-		exit(1);
-	}
+	CHECK_PTR_ALLOC(new, "allocation error (tried to `malloc` `new` but got `NULL`)", 1)
 	
 	new -> len = 0;
 
-	acc = 0;
-	mult10 = 1;
 	// basically add the numbers of the string to a unsigned long long untill there's an overflow
 	// then allocates a new unsigned long long and adds from there
 	while (string_len) {
-		add = mult10 * ((s[string_len - 1]) - 48);
 		// if there has been an overflow
-		if (acc + add >= BASE || has_overflown(add)) {
-			// reallocate the nums array (add one)
-			(new -> len)++;
-			temp = realloc(new_nums, (new -> len) * sizeof(Chunk));
-			if (!temp) {
-				errno = EFAULT;
-				ALLOCATION_ERR;
-				exit(1);
-			}
-			new_nums = temp;
-			
-			// add the number before the overflow (prec) to the nums array
-			new_nums[(new -> len) - 1] = acc;
-
-			// mult is 1
-			mult10 = 1;
-			// reset accumulator
-			acc = 0;
-			// new add
-			add = (s[string_len - 1]) - 48;
-		}
-
-		acc += add;
-		mult10 *= 10;
-				
-		string_len--;
-	}
-
-	if (acc || (new -> len == 0)) {
+		#ifndef NDEBUG
+		printf("add: %llu\n", add);
+		#endif
+		for (i = 0, mult10 = 1, acc = 0;
+		     i <= base_len && string_len;
+		     i++, string_len--, acc += add, mult10 *= 10)
+			add = mult10 * ((s[string_len - 1]) - 48);
+		
+		// reallocate the nums array (add one)
 		(new -> len)++;
 		new_nums = realloc(new_nums, (new -> len) * sizeof(Chunk));
+		CHECK_PTR_ALLOC( new_nums
+			   , "allocation error (tried to `realloc` `new_nums` but got `NULL`)"
+			   , 1)
+		
+		// add the accumulator to the new_nums array
 		new_nums[(new -> len) - 1] = acc;
+		
+                        #ifndef NDEBUG
+		printf("%llu\n", acc);
+		#endif
+			
+		// new add
+		add = (s[string_len - 1]) - 48;
 	}
 
 	new -> nums = new_nums;
@@ -120,17 +128,26 @@ BigInt new_big_int(char* s) {
 
 
 void print_big_int(BigInt n) {
+	CHECK_PTR_ALLOC(n, "allocation error", 1)
 	if (!n) {
 		printf("0\n");
 		return;
 	}
+
+	
 	int i;
-	for (i = n -> len; i; i--)
-		printf("%llu", (n -> nums)[i - 1]);
+	char fmt[20];
+	INIT_FMT_STRING(fmt, base_len)
+	printf("%llu", (n -> nums)[n -> len - 1]);
+	for (i = n -> len - 1; i; i--)
+		printf(fmt, (n -> nums)[i - 1]);
 	printf("\n");
 }
 
 void print_big_int2(BigInt n) {
+	CHECK_PTR_ALLOC(n, "allocation error (the argument cannot be `NULL`)", 0);
+	if (n == NULL) return;
+	
 	int i;
 	for (i = 0; i < n -> len; i++)
 		printf("%llu\n", (n -> nums)[i]);
@@ -139,10 +156,11 @@ void print_big_int2(BigInt n) {
 
 char* big_int_to_string(BigInt n) {
 
-	const size_t bound = (int) log10(BASE);
+	const size_t bound = (int) log10(base);
 
 	int i;
 	char* final = malloc((n -> len) * bound * sizeof(char));
+	CHECK_PTR_ALLOC(final, "allocation error", 1)
 	char num[bound + 1];
 
 	
@@ -178,8 +196,8 @@ BigInt add_big_int(BigInt a, BigInt b) {
 
 		res = rem + big_value + small_value;
 
-		if (res > BASE) {
-			res -= BASE;
+		if (res > base) {
+			res -= base;
 			rem = 1;
 		} else rem = 0;
 		
@@ -188,8 +206,8 @@ BigInt add_big_int(BigInt a, BigInt b) {
 	
 	if (rem) {
 		(result -> len)++;
-		// (result -> nums) = realloc(result -> nums, (result -> len) * sizeof(Chunk));
-
+		(result -> nums) = realloc(result -> nums, (result -> len) * sizeof(Chunk));
+		CHECK_PTR_ALLOC(result -> nums, "allocation error", 1)
 		(result -> nums)[result -> len - 1] = 1;
 	}
 
@@ -198,18 +216,14 @@ BigInt add_big_int(BigInt a, BigInt b) {
 }
 
 BigInt multiply_big_int_small_int(BigInt a, Chunk n) {
-	if (n >= BASE) {
+	if (n >= base) {
 		return NULL;
 	}
 
 	int index;
 	BigInt result = malloc(sizeof(struct bigInt));
-	if (!result) {
-		errno = EFAULT;
-		ALLOCATION_ERR;
-		exit(1);
-	}
-
+	CHECK_PTR_ALLOC(result, "allocation error", 1)
+		
 	Chunk rem, res, *temp;
 
 	result -> len = (a -> len) + 1;
@@ -217,8 +231,8 @@ BigInt multiply_big_int_small_int(BigInt a, Chunk n) {
 	
 	for (index = rem = 0; index < a -> len; index++) {
 		res = (n * (a -> nums)[index]) + rem;
-		rem = res / BASE;
-		res %= BASE;
+		rem = res / base;
+		res %= base;
 		(result -> nums)[index] = res;
 	}
 	
@@ -227,42 +241,29 @@ BigInt multiply_big_int_small_int(BigInt a, Chunk n) {
 	else {
 		
 		temp = realloc(result -> nums, ((result -> len) - 1) * sizeof(Chunk));
-		if (!temp) {
-			errno = EFAULT;
-			ALLOCATION_ERR;
-			exit(1);
-		} else {
-			result -> nums = temp;
-			(result -> len)--;
-		}
+		CHECK_PTR_ALLOC(temp, "allocation error (tried to `realloc` `temp` but got `NULL`)", 1)
+		result -> nums = temp;
+		(result -> len)--;
 	}
 
 	return result;
 }	
 
+// TODO: segfaults
 BigInt multiply_big_int(BigInt a, BigInt b) {
+	// a nor b can be NULL
 	if (!a || !b) {
 		return NULL;
 	}
 
+	
 	BigInt result = malloc(sizeof(struct bigInt));
-	if (!result) {
-		errno = EFAULT;
-		ALLOCATION_ERR;
-		exit(1);
-	}
+	CHECK_PTR_ALLOC(result, "allocation error (tried do `malloc` `result` but got `NULL`)", 1)
 
 	int i, j;
 	
 	result -> len = (a -> len) + (b -> len);
 	result -> nums = malloc((result -> len) * sizeof(Chunk));
-
-	/* for (i = 0; i < a -> len; i++)  */
-	/* 	for (j = rem = 0; j < b -> len || rem; j++) { */
-	/* 		res = (a -> nums)[i] * (j < b -> len ? (b -> nums)[j] : 0) + rem; */
-	/* 		(result -> nums)[i+j] = res % BASE; */
-	/* 		rem = res / BASE; */
-	/* 	} */
 
 	BigInt res, new_res;
 	
@@ -280,8 +281,8 @@ BigInt multiply_big_int(BigInt a, BigInt b) {
 		destroy_big_int(result);
 	}
 
+	// shorten the bignum eliminating leading zeroes
 	for (i = result -> len; i && !((result -> nums)[i - 1]); i--);
-	
 	if (i != (result -> len)) {
 		result -> nums = realloc(result -> nums, i * sizeof(Chunk));
 		result -> len = i;
@@ -295,4 +296,13 @@ BigInt multiply_big_int(BigInt a, BigInt b) {
 void destroy_big_int(BigInt n) {
 	free(n -> nums);
 	free(n);
+}
+
+int big_int_change_def_base(Chunk n) {
+	// the base cannot be 0 or 1
+	if (n == 0 || n == 1) return 0;
+	
+	base = n;
+	base_len = (int) log10(n);
+	return 1;
 }
